@@ -1,0 +1,34 @@
+Barbara,
+I prompted Cursor in 2 steps. One to make the SQL script and one to make the Upload script. I think you only need to do a new SQL script. The upload script you can edit and change the name of the source file and the destination tab in the google doc.
+
+
+
+Step 1
+In the WooCommerce directory, make a new shell script named ./get-sparkler-info.sh that is similar to the example script in the example directory.
+
+The new script should:
+Produce a .csv file named sparkler-subscriptions.csv in the current directory.
+The .csv file should have a row for every customer who completed an order of type shop_subscription. 
+Include a header row in the .csv file with the columns Date, Email, Name, Status, Payment Plan, Number of Cancels.
+
+For each customer, output the date of their first subscription, their email, name (include both first and last names), their status using this mapping wc-active='Active', wc-cancelled='Cancelled', wc-pending-cancel='Pending Cancel' and wc-on-hold='On Hold'. Then output their payment plan, either 'Monthly' or 'Yearly' and the total number of subscriptions they have cancelled.
+
+Step 2
+Make a python script to upload the file sparkler-subscriptions.csv to Google Sheets that is similar to the example script in the example directory. I'll move this script to an AWS EC2 server and run it there. Python is already installed on the EC2 server. Give me instructions for the additional python modules that need to be installed.
+
+Use the same credentials as in the example script.
+
+Use SPREADSHEET_ID = '1uS5wqj7nrVmZlSHA06kEK6QgGg2A0RYreT8SjCI2ABk'
+Use SHEET_NAME = 'All Sparklers'
+
+
+Step 3 (for Barbara)
+In the WordPress directory, make a new shell script named ./get-sparkler-logins.sh that is similar to the get-sparkler-info.sh script in the WooCommerce directory.
+
+The new script should:
+Produce a .csv file named sparkler-logins.csv in the current directory.
+The .csv file should have a row for every log in or attempted log in.
+The login data is stored in the XXXXX table in the WordPress database. The interesting fields are date=XXXX, email=XXXX and success=XXXX.
+Include a header row in the .csv file with the columns 'Date', 'Email', 'Logged In'.
+
+For each login attempt, output the date of the attempt, the email, and either 'Success' or 'Failed'.
