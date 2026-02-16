@@ -1,0 +1,12 @@
+# Klaviyo API Configuration
+# Copy this file to config.env and fill in your values.
+# Or set KLAVIYO_API_KEY in your environment.
+
+# Your Klaviyo Private API Key (required)
+# Create one at: https://www.klaviyo.com/account#api-keys
+# Required scopes: campaigns:read, events:read, metrics:read
+export KLAVIYO_API_KEY=your-private-api-key-here
+
+# Optional: Conversion metric ID for Reporting API
+# Used when fetching campaign statistics. If not set, a placeholder is used.
+# CONVERSION_METRIC_ID=RESQ6t
