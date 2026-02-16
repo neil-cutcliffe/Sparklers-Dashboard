@@ -23,48 +23,40 @@ Download email recipient lists, opens, and clicks for Klaviyo campaigns.
    - `campaigns:read` – list campaigns and get audience info
    - `lists:read` and `segments:read` – fetch audience profiles (recipients)
    - `profiles:read` – required for segment/list profile endpoints
+   - `events:read` – per-recipient opens and clicks
+   - `metrics:read` – Opened Email and Clicked Email metric IDs
 
    Create keys at: https://www.klaviyo.com/account#api-keys
 
 ## Usage
 
-**Download all sent email campaigns:**
+**Download by campaign name:**
 ```bash
-./download_campaign_data.sh --all
+./download_campaign_data.sh "TSC Newsletter Feb 15"
 ```
 
-**Download specific campaigns by ID:**
+**Multiple campaigns:**
 ```bash
-./download_campaign_data.sh CAMPAIGN_ID1 CAMPAIGN_ID2
+./download_campaign_data.sh "Campaign 1" "Campaign 2"
 ```
 
 **Output directory:**
 ```bash
-./download_campaign_data.sh --all -o ./output
+./download_campaign_data.sh "TSC Newsletter Feb 15" -o ./output
 ```
 
 ## Output
 
-For each campaign, the script writes a CSV with:
+For each campaign, the script writes a CSV with one row per recipient:
 
-| Column           | Description                                      |
-|------------------|--------------------------------------------------|
-| campaign_id      | Klaviyo campaign ID                              |
-| campaign_name    | Campaign name                                   |
-| email            | Recipient email                                 |
-| customer_id      | Klaviyo profile/customer ID                     |
-| status           | Delivery status (e.g. Sent)                      |
-| campaign_opens   | Total opens for the campaign (aggregate)         |
-| campaign_clicks  | Total clicks for the campaign (aggregate)        |
-| campaign_open_rate | Campaign open rate (0–1)                      |
-| campaign_click_rate | Campaign click rate (0–1)                    |
-
-**Note:** Opens and clicks are campaign-level aggregates. Per-recipient open/click data is not provided by the Klaviyo Reporting API. To get per-recipient engagement, you would need to use the Events API and correlate events by profile and campaign.
+| Column | Description |
+|--------|-------------|
+| email  | Recipient email |
+| opened | Number of times this recipient opened the email |
+| clicked | Number of times this recipient clicked a link |
 
 ## What You Need to Provide
 
-1. **Klaviyo Private API Key** – Required. Create one in your Klaviyo account with `campaigns:read` scope.
+1. **Klaviyo Private API Key** – Required. Create one in your Klaviyo account with the scopes listed above.
 
-2. **Campaign IDs** (if not using `--all`) – You can find these in the Klaviyo UI when viewing a campaign (in the URL or campaign settings).
-
-3. **Conversion metric ID** (optional) – The Reporting API requires a conversion metric. The default `RESQ6t` is a common placeholder. If you see errors, look up your "Placed Order" or similar metric ID in Klaviyo and set `CONVERSION_METRIC_ID` in config.env.
+2. **Campaign name** – The exact or partial campaign name (e.g. "TSC Newsletter Feb 15"). The script finds sent campaigns whose name contains the given text.

@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Download Klaviyo email campaign data: recipients, opens, and clicks.
+Download Klaviyo email campaign data: recipients with per-recipient opens and clicks.
 
 Uses the Klaviyo API to fetch:
-- Recipient lists (email, customer_id, status) per campaign
-- Campaign-level opens and clicks from the Reporting API
+- Recipient lists (email, status) per campaign
+- Per-recipient opens and clicks from the Events API
 
 Usage:
-    python download_campaign_data.py [--all | CAMPAIGN_ID ...]
-    python download_campaign_data.py --all
-    python download_campaign_data.py 01GMRWDSA0ARTAKE1SFX8JGXAY XyZ123
+    python download_campaign_data.py "TSC Newsletter Feb 15"
+    python download_campaign_data.py "TSC Newsletter Feb 15" "Another Campaign"
 
 Requires KLAVIYO_API_KEY in environment or config.env.
 """
@@ -19,6 +18,7 @@ import sys
 import csv
 import argparse
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 try:
@@ -33,9 +33,10 @@ API_CAMPAIGNS = f"{KLAVIYO_BASE}/api/campaigns"
 API_CAMPAIGN = f"{KLAVIYO_BASE}/api/campaigns/{{id}}"
 API_SEGMENT_PROFILES = f"{KLAVIYO_BASE}/api/segments/{{id}}/profiles/"
 API_LIST_PROFILES = f"{KLAVIYO_BASE}/api/lists/{{id}}/profiles/"
-REPORTING_CAMPAIGN_VALUES = f"{KLAVIYO_BASE}/api/campaign-values-reports/"
-REPORTING_REVISION = "2024-10-15"
+API_EVENTS = f"{KLAVIYO_BASE}/api/events/"
+API_METRICS = f"{KLAVIYO_BASE}/api/metrics"
 API_REVISION = "2024-10-15"
+EVENTS_REVISION = "2024-02-15"
 
 
 def _api_headers(api_key):
@@ -67,11 +68,14 @@ def load_config():
     return None
 
 
-def get_campaigns(api_key, channel="email"):
-    """Fetch all campaigns using new API (channel filter required)."""
+def get_campaigns(api_key, channel="email", name_filter=None):
+    """Fetch campaigns. If name_filter given, filter by name contains."""
     campaigns = []
     url = API_CAMPAIGNS
-    params = {"filter": f"equals(messages.channel,'{channel}')"}
+    flt = f"equals(messages.channel,'{channel}')"
+    if name_filter:
+        flt = f"and({flt},contains(name,\"{name_filter}\"))"
+    params = {"filter": flt}
     while True:
         resp = requests.get(url, params=params, headers=_api_headers(api_key), timeout=30)
         resp.raise_for_status()
@@ -86,15 +90,19 @@ def get_campaigns(api_key, channel="email"):
         url = data.get("links", {}).get("next")
         if not url:
             break
-        params = {}  # Next URL has params
+        params = {}
         time.sleep(0.2)
     return campaigns
 
 
-def get_campaign(api_key, campaign_id):
-    """Fetch a single campaign with audiences."""
+def get_campaign(api_key, campaign_id, include_messages=False):
+    """Fetch a single campaign with audiences and optionally campaign-messages."""
+    params = {}
+    if include_messages:
+        params["include"] = "campaign-messages"
     resp = requests.get(
         API_CAMPAIGN.format(id=campaign_id),
+        params=params,
         headers=_api_headers(api_key),
         timeout=30,
     )
@@ -102,12 +110,18 @@ def get_campaign(api_key, campaign_id):
     data = resp.json()
     item = data.get("data", {})
     attrs = item.get("attributes", {})
-    return {
+    result = {
         "id": item.get("id"),
         "name": attrs.get("name", ""),
         "status": attrs.get("status", ""),
         "audiences": attrs.get("audiences", {}).get("included", []),
+        "send_time": attrs.get("send_time"),
     }
+    if include_messages:
+        msg_data = item.get("relationships", {}).get("campaign-messages", {}).get("data", [])
+        result["message_ids"] = [m.get("id") for m in msg_data if m.get("id")]
+        result["included"] = data.get("included", [])
+    return result
 
 
 def _get_profiles_from_resource(api_key, resource_id, is_segment):
@@ -159,127 +173,166 @@ def get_campaign_recipients(api_key, campaign_id):
     return recipients
 
 
-def get_campaign_stats(api_key, campaign_id, conversion_metric_id="RESQ6t"):
-    """Fetch campaign opens/clicks from Reporting API."""
-    # Reporting API uses newer ID format; v1 IDs may differ
-    payload = {
-        "data": {
-            "type": "campaign-values-report",
-            "attributes": {
-                "timeframe": {"key": "last_12_months"},
-                "conversion_metric_id": conversion_metric_id,
-                "filter": f'equals(campaign_id,"{campaign_id}")',
-                "statistics": [
-                    "recipients",
-                    "delivered",
-                    "opens",
-                    "opens_unique",
-                    "open_rate",
-                    "clicks",
-                    "clicks_unique",
-                    "click_rate",
-                ],
-                "group_by": ["campaign_id", "campaign_message_id", "send_channel"],
-            },
-        }
+def _get_metric_ids(api_key):
+    """Get metric IDs for Opened Email and Clicked Email."""
+    metrics = {}
+    url = API_METRICS
+    params = {}
+    while True:
+        resp = requests.get(url, params=params, headers=_api_headers(api_key), timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("data", []):
+            name = item.get("attributes", {}).get("name", "")
+            if name == "Opened Email":
+                metrics["opened"] = item.get("id")
+            elif name == "Clicked Email":
+                metrics["clicked"] = item.get("id")
+        url = data.get("links", {}).get("next")
+        if not url or (metrics.get("opened") and metrics.get("clicked")):
+            break
+        params = {}
+        time.sleep(0.2)
+    return metrics
+
+
+def _get_events_for_metric(api_key, metric_id, start_dt, end_dt):
+    """Fetch events for a metric in datetime range. Returns list of {profile_id, event_properties}."""
+    events = []
+    url = API_EVENTS
+    # Datetime values must not be quoted per Klaviyo API
+    flt = f"and(equals(metric_id,\"{metric_id}\"),greater-or-equal(datetime,{start_dt}),less-than(datetime,{end_dt}))"
+    params = {
+        "filter": flt,
+        "include": "profile",
+        "fields[event]": "event_properties,datetime",
+        "fields[profile]": "email",
+        "page[size]": 200,
+        "sort": "datetime",
     }
+    headers = {**_api_headers(api_key), "revision": EVENTS_REVISION}
+    while True:
+        resp = requests.get(url, params=params, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("data", []):
+            rel = item.get("relationships", {})
+            profile_data = rel.get("profile", {}).get("data", {})
+            profile_id = profile_data.get("id") if profile_data else None
+            props = item.get("attributes", {}).get("event_properties", {}) or {}
+            events.append({"profile_id": profile_id, "event_properties": props})
+        url = data.get("links", {}).get("next")
+        if not url:
+            break
+        params = {}
+        time.sleep(0.1)
+    return events
 
-    resp = requests.post(
-        REPORTING_CAMPAIGN_VALUES,
-        headers={
-            "Authorization": f"Klaviyo-API-Key {api_key}",
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "revision": REPORTING_REVISION,
-        },
-        json=payload,
-        timeout=30,
+
+def _event_matches_campaign(props, message_ids_set, campaign_name, include_all=False):
+    """Check if event belongs to our campaign via message ID or Campaign Name."""
+    if include_all:
+        return True
+    if not props:
+        return False
+    # Try message ID fields (exact match)
+    msg_id = (
+        props.get("$message")
+        or props.get("$attributed_message")
+        or props.get("Message ID")
+        or props.get("message_id")
     )
-
-    if resp.status_code == 404 or (resp.status_code == 400 and "campaign" in resp.text.lower()):
-        return None  # Campaign not found or wrong ID format for Reporting API
-
-    resp.raise_for_status()
-    data = resp.json()
-
-    results = data.get("data", {}).get("attributes", {}).get("results", [])
-    if not results:
-        return None
-
-    # Sum counts across variations; use first result for rates
-    totals = {"recipients": 0, "delivered": 0, "opens": 0, "opens_unique": 0, "clicks": 0, "clicks_unique": 0}
-    open_rate = click_rate = None
-    for r in results:
-        s = r.get("statistics", {})
-        for k in ("recipients", "delivered", "opens", "opens_unique", "clicks", "clicks_unique"):
-            totals[k] += s.get(k) or 0
-        if open_rate is None:
-            open_rate = s.get("open_rate")
-        if click_rate is None:
-            click_rate = s.get("click_rate")
-    totals["open_rate"] = open_rate
-    totals["click_rate"] = click_rate
-    return totals
+    if msg_id and message_ids_set and msg_id in message_ids_set:
+        return True
+    # Fallback: match by Campaign Name (events include this)
+    camp_name = props.get("Campaign Name") or props.get("Campaign Name ")
+    if campaign_name and camp_name:
+        cn, ev_cn = str(campaign_name), str(camp_name)
+        if cn in ev_cn or ev_cn in cn:
+            return True
+    return False
 
 
-def write_recipients_csv(recipients, stats, campaign_name, campaign_id, output_path):
-    """Write combined CSV: recipients with campaign-level stats."""
-    fieldnames = [
-        "campaign_id",
-        "campaign_name",
-        "email",
-        "customer_id",
-        "status",
-        "campaign_opens",
-        "campaign_clicks",
-        "campaign_open_rate",
-        "campaign_click_rate",
-    ]
+def get_per_recipient_engagement(api_key, campaign_id, message_ids, send_time, campaign_name=None):
+    """Get per-recipient open/click counts via Events API."""
+    metric_ids = _get_metric_ids(api_key)
+    if not metric_ids.get("opened") and not metric_ids.get("clicked"):
+        return {}
+
+    try:
+        if send_time:
+            st = datetime.fromisoformat(send_time.replace("Z", "+00:00"))
+        else:
+            st = datetime.utcnow() - timedelta(days=30)
+    except Exception:
+        st = datetime.utcnow() - timedelta(days=60)
+    start_dt = (st - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+    end_dt = (st + timedelta(days=60)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+
+    message_ids_set = set(message_ids or []) or {campaign_id}
+    engagement = {}  # profile_id -> {"opened": 0, "clicked": 0}
+
+    for metric_key, metric_id in metric_ids.items():
+        if not metric_id:
+            continue
+        event_type = "opened" if metric_key == "opened" else "clicked"
+        events_raw = _get_events_for_metric(api_key, metric_id, start_dt, end_dt)
+        matched = sum(
+            1
+            for ev in events_raw
+            if _event_matches_campaign(
+                ev.get("event_properties"), message_ids_set, campaign_name, include_all=False
+            )
+        )
+        # If no events matched message/campaign filter, include all (fallback for API quirks)
+        use_all = len(events_raw) > 0 and matched == 0
+        if use_all:
+            print(f"    Note: Using all {len(events_raw)} {event_type} events (message filter matched 0)")
+        for ev in events_raw:
+            pid = ev.get("profile_id")
+            if not pid:
+                continue
+            if not _event_matches_campaign(
+                ev.get("event_properties"), message_ids_set, campaign_name, include_all=use_all
+            ):
+                continue
+            if pid not in engagement:
+                engagement[pid] = {"opened": 0, "clicked": 0}
+            engagement[pid][event_type] += 1
+        time.sleep(0.2)
+    return engagement
+
+
+def write_recipients_csv(recipients, engagement, output_path):
+    """Write CSV: one row per recipient with email, opened count, clicked count."""
+    fieldnames = ["email", "opened", "clicked"]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        opens = stats.get("opens", 0) if stats else ""
-        clicks = stats.get("clicks", 0) if stats else ""
-        open_rate = stats.get("open_rate", "") if stats else ""
-        click_rate = stats.get("click_rate", "") if stats else ""
         for r in recipients:
+            pid = r.get("customer_id", "")
+            eng = engagement.get(pid, {})
             writer.writerow({
-                "campaign_id": campaign_id,
-                "campaign_name": campaign_name,
                 "email": r.get("email", ""),
-                "customer_id": r.get("customer_id", ""),
-                "status": r.get("status", ""),
-                "campaign_opens": opens,
-                "campaign_clicks": clicks,
-                "campaign_open_rate": open_rate,
-                "campaign_click_rate": click_rate,
+                "opened": eng.get("opened", 0),
+                "clicked": eng.get("clicked", 0),
             })
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download Klaviyo campaign recipients, opens, and clicks."
+        description="Download Klaviyo campaign recipients with per-recipient opens and clicks."
     )
     parser.add_argument(
-        "campaign_ids",
-        nargs="*",
-        help="Campaign IDs to fetch. Omit if using --all.",
-    )
-    parser.add_argument(
-        "--all",
-        action="store_true",
-        help="Fetch all sent campaigns from the account.",
+        "campaign_names",
+        nargs="+",
+        help="Campaign name(s) to fetch, e.g. 'TSC Newsletter Feb 15'.",
     )
     parser.add_argument(
         "-o",
         "--output-dir",
         default=".",
         help="Output directory for CSV files (default: current directory).",
-    )
-    parser.add_argument(
-        "--conversion-metric",
-        default=os.environ.get("CONVERSION_METRIC_ID", "RESQ6t"),
-        help="Conversion metric ID for Reporting API.",
     )
     args = parser.parse_args()
 
@@ -294,31 +347,22 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.all:
-        print("Fetching campaign list...")
-        campaigns = get_campaigns(api_key, channel="email")
-        campaign_ids = [c["id"] for c in campaigns if c.get("status") == "Sent"]
-        if not campaign_ids:
-            print("No sent email campaigns found.")
-            return
-        print(f"Found {len(campaign_ids)} sent email campaign(s).")
-        campaigns_by_id = {c["id"]: c for c in campaigns}
-    else:
-        if not args.campaign_ids:
-            parser.error("Provide campaign IDs or use --all")
-        campaign_ids = args.campaign_ids
-        campaigns_by_id = {}
+    for campaign_name in args.campaign_names:
+        print(f"Finding campaign: {campaign_name}...")
+        campaigns = get_campaigns(api_key, channel="email", name_filter=campaign_name)
+        sent = [c for c in campaigns if c.get("status") == "Sent"]
+        if not sent:
+            print(f"  No sent campaign found matching '{campaign_name}'. Skipping.", file=sys.stderr)
+            continue
+        if len(sent) > 1:
+            print(f"  Multiple matches; using first: {sent[0]['name']}")
+        campaign = sent[0]
+        campaign_id = campaign["id"]
 
-    for campaign_id in campaign_ids:
-        campaign_name = campaigns_by_id.get(campaign_id, {}).get("name", "Unknown")
-        if campaign_name == "Unknown":
-            try:
-                camp = get_campaign(api_key, campaign_id)
-                campaign_name = camp.get("name", campaign_id)
-            except requests.HTTPError:
-                pass
-
-        print(f"Fetching campaign: {campaign_name} ({campaign_id})...")
+        print(f"Fetching campaign: {campaign['name']} ({campaign_id})...")
+        camp_full = get_campaign(api_key, campaign_id, include_messages=True)
+        message_ids = camp_full.get("message_ids", [])
+        send_time = camp_full.get("send_time")
 
         try:
             recipients = get_campaign_recipients(api_key, campaign_id)
@@ -327,22 +371,22 @@ def main():
             print(f"  Error fetching recipients: {e}", file=sys.stderr)
             continue
 
-        stats = None
+        print("  Fetching per-recipient opens and clicks...")
+        engagement = {}
         try:
-            stats = get_campaign_stats(api_key, campaign_id, args.conversion_metric)
-            if stats:
-                print(f"  Opens: {stats.get('opens', 'N/A')}, Clicks: {stats.get('clicks', 'N/A')}")
-            else:
-                print("  (Campaign stats not available - ID may use different format for Reporting API)")
+            engagement = get_per_recipient_engagement(
+                api_key, campaign_id, message_ids, send_time, campaign["name"]
+            )
+            total_opens = sum(e.get("opened", 0) for e in engagement.values())
+            total_clicks = sum(e.get("clicked", 0) for e in engagement.values())
+            print(f"  Total opens: {total_opens}, Total clicks: {total_clicks}")
         except requests.HTTPError as e:
-            print(f"  Note: Could not fetch campaign stats: {e}", file=sys.stderr)
+            print(f"  Note: Could not fetch engagement: {e}", file=sys.stderr)
 
-        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in campaign_name)[:50]
-        output_path = output_dir / f"klaviyo_{campaign_id}_{safe_name}.csv"
-        write_recipients_csv(recipients, stats, campaign_name, campaign_id, output_path)
+        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in campaign["name"])[:50]
+        output_path = output_dir / f"klaviyo_{safe_name}.csv"
+        write_recipients_csv(recipients, engagement, output_path)
         print(f"  Wrote: {output_path}")
-
-        time.sleep(1)  # Reporting API rate limit: 2/min
 
     print("Done.")
 
