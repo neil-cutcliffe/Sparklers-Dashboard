@@ -8,6 +8,10 @@ Download email recipient lists, opens, and clicks for Klaviyo campaigns.
    ```bash
    pip install -r requirements.txt
    ```
+## Prefer virtual environment
+ #  python3 -m venv venv
+ #  source venv/bin/activate
+ #  pip install -r requirements.txt --force-reinstall
 
 2. **Configure API access**
    - Copy `config.example` to `config.env`
@@ -16,9 +20,9 @@ Download email recipient lists, opens, and clicks for Klaviyo campaigns.
 
 3. **API key scopes**
    Your Klaviyo Private API key needs:
-   - `campaigns:read` – list campaigns and recipients
-   - `events:read` – (optional, for future per-recipient events)
-   - `metrics:read` – (optional, for conversion metric)
+   - `campaigns:read` – list campaigns and get audience info
+   - `lists:read` and `segments:read` – fetch audience profiles (recipients)
+   - `profiles:read` – required for segment/list profile endpoints
 
    Create keys at: https://www.klaviyo.com/account#api-keys
 

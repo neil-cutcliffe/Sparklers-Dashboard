@@ -2,4 +2,6 @@ Upload-to-Sheets/venv/
 Upload-to-Sheets/credentials.json 
 Upload-to-Sheets/token.pickle
 *.csv
+Klaviyo/venv/
+Klaviyo/__pycache__/
 Klaviyo/config.env

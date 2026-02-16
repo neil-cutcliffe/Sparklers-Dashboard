@@ -13,6 +13,13 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
+# Use venv Python if it exists
+if [ -f venv/bin/python ]; then
+    PYTHON=./venv/bin/python
+else
+    PYTHON=python3
+fi
+
 # Load config.env if it exists
 if [ -f config.env ]; then
     set -a
@@ -21,4 +28,4 @@ if [ -f config.env ]; then
 fi
 
 # Run the Python script, passing through all arguments
-exec python3 download_campaign_data.py "$@"
+exec "$PYTHON" download_campaign_data.py "$@"

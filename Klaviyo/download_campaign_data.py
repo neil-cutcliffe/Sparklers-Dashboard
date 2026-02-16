@@ -27,12 +27,24 @@ except ImportError:
     print("Error: requests package required. Run: pip install -r requirements.txt", file=sys.stderr)
     sys.exit(1)
 
-# API endpoints
+# API endpoints (new API - v1 deprecated June 2024)
 KLAVIYO_BASE = "https://a.klaviyo.com"
-V1_CAMPAIGNS = f"{KLAVIYO_BASE}/api/v1/campaigns"
-V1_RECIPIENTS = f"{KLAVIYO_BASE}/api/v1/campaign/{{campaign_id}}/recipients"
+API_CAMPAIGNS = f"{KLAVIYO_BASE}/api/campaigns"
+API_CAMPAIGN = f"{KLAVIYO_BASE}/api/campaigns/{{id}}"
+API_SEGMENT_PROFILES = f"{KLAVIYO_BASE}/api/segments/{{id}}/profiles/"
+API_LIST_PROFILES = f"{KLAVIYO_BASE}/api/lists/{{id}}/profiles/"
 REPORTING_CAMPAIGN_VALUES = f"{KLAVIYO_BASE}/api/campaign-values-reports/"
 REPORTING_REVISION = "2024-10-15"
+API_REVISION = "2024-10-15"
+
+
+def _api_headers(api_key):
+    return {
+        "Authorization": f"Klaviyo-API-Key {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "revision": API_REVISION,
+    }
 
 
 def load_config():
@@ -48,53 +60,102 @@ def load_config():
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
-                    if key.strip() == "KLAVIYO_API_KEY":
+                    key = key.strip().replace("export ", "")
+                    if key == "KLAVIYO_API_KEY":
                         return value.strip()
 
     return None
 
 
-def get_v1_campaigns(api_key):
-    """Fetch all campaigns using v1 API."""
+def get_campaigns(api_key, channel="email"):
+    """Fetch all campaigns using new API (channel filter required)."""
     campaigns = []
-    page = 0
+    url = API_CAMPAIGNS
+    params = {"filter": f"equals(messages.channel,'{channel}')"}
     while True:
-        resp = requests.get(
-            V1_CAMPAIGNS,
-            params={"api_key": api_key, "page": page, "count": 100},
-            timeout=30,
-        )
+        resp = requests.get(url, params=params, headers=_api_headers(api_key), timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        campaigns.extend(data.get("data", []))
-        if page * data.get("page_size", 0) + len(data.get("data", [])) >= data.get("total", 0):
+        for item in data.get("data", []):
+            attrs = item.get("attributes", {})
+            campaigns.append({
+                "id": item.get("id"),
+                "name": attrs.get("name", ""),
+                "status": attrs.get("status", ""),
+            })
+        url = data.get("links", {}).get("next")
+        if not url:
             break
-        page += 1
-        time.sleep(0.5)  # Rate limit
+        params = {}  # Next URL has params
+        time.sleep(0.2)
     return campaigns
 
 
-def get_campaign_recipients(api_key, campaign_id):
-    """Fetch all recipients for a campaign (paginated)."""
-    recipients = []
-    offset = None
-    url = V1_RECIPIENTS.format(campaign_id=campaign_id)
+def get_campaign(api_key, campaign_id):
+    """Fetch a single campaign with audiences."""
+    resp = requests.get(
+        API_CAMPAIGN.format(id=campaign_id),
+        headers=_api_headers(api_key),
+        timeout=30,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    item = data.get("data", {})
+    attrs = item.get("attributes", {})
+    return {
+        "id": item.get("id"),
+        "name": attrs.get("name", ""),
+        "status": attrs.get("status", ""),
+        "audiences": attrs.get("audiences", {}).get("included", []),
+    }
 
+
+def _get_profiles_from_resource(api_key, resource_id, is_segment):
+    """Fetch profiles from a segment or list (paginated)."""
+    url = (API_SEGMENT_PROFILES if is_segment else API_LIST_PROFILES).format(id=resource_id)
+    profiles = []
+    params = {"page[size]": 100}
     while True:
-        params = {"api_key": api_key, "count": 25000, "sort": "asc"}
-        if offset:
-            params["offset"] = offset
-
-        resp = requests.get(url, params=params, timeout=60)
+        resp = requests.get(url, params=params, headers=_api_headers(api_key), timeout=60)
+        if resp.status_code == 404:
+            return None  # Wrong resource type
         resp.raise_for_status()
         data = resp.json()
-
-        recipients.extend(data.get("data", []))
-        offset = data.get("next_offset")
-        if not offset:
+        for item in data.get("data", []):
+            attrs = item.get("attributes", {})
+            profiles.append({
+                "email": attrs.get("email", ""),
+                "customer_id": item.get("id", ""),
+                "status": "Sent",  # Audience members are targeted recipients
+            })
+        url = data.get("links", {}).get("next")
+        if not url:
             break
-        time.sleep(0.5)
+        params = {}
+        time.sleep(0.2)
+    return profiles
 
+
+def get_campaign_recipients(api_key, campaign_id):
+    """Fetch recipients via campaign audiences (lists/segments)."""
+    campaign = get_campaign(api_key, campaign_id)
+    audience_ids = campaign.get("audiences", [])
+    if not audience_ids:
+        return []
+
+    seen = set()
+    recipients = []
+    for aud_id in audience_ids:
+        profs = _get_profiles_from_resource(api_key, aud_id, is_segment=True)
+        if profs is None:
+            profs = _get_profiles_from_resource(api_key, aud_id, is_segment=False)
+        if profs:
+            for p in profs:
+                key = (p.get("email", ""), p.get("customer_id", ""))
+                if key not in seen and key[0]:
+                    seen.add(key)
+                    recipients.append(p)
+        time.sleep(0.2)
     return recipients
 
 
@@ -235,29 +296,27 @@ def main():
 
     if args.all:
         print("Fetching campaign list...")
-        campaigns = get_v1_campaigns(api_key)
-        # Only include sent campaigns
-        campaign_ids = [
-            c["id"]
-            for c in campaigns
-            if c.get("status") == "sent" and c.get("message_type") == "email"
-        ]
+        campaigns = get_campaigns(api_key, channel="email")
+        campaign_ids = [c["id"] for c in campaigns if c.get("status") == "Sent"]
         if not campaign_ids:
             print("No sent email campaigns found.")
             return
         print(f"Found {len(campaign_ids)} sent email campaign(s).")
+        campaigns_by_id = {c["id"]: c for c in campaigns}
     else:
         if not args.campaign_ids:
             parser.error("Provide campaign IDs or use --all")
         campaign_ids = args.campaign_ids
-        campaigns = {c["id"]: c for c in get_v1_campaigns(api_key)}
+        campaigns_by_id = {}
 
     for campaign_id in campaign_ids:
-        campaign_name = "Unknown"
-        if args.all and campaign_id in campaigns:
-            campaign_name = campaigns[campaign_id].get("name", campaign_id)
-        elif not args.all and campaigns:
-            campaign_name = campaigns.get(campaign_id, {}).get("name", campaign_id)
+        campaign_name = campaigns_by_id.get(campaign_id, {}).get("name", "Unknown")
+        if campaign_name == "Unknown":
+            try:
+                camp = get_campaign(api_key, campaign_id)
+                campaign_name = camp.get("name", campaign_id)
+            except requests.HTTPError:
+                pass
 
         print(f"Fetching campaign: {campaign_name} ({campaign_id})...")
 
