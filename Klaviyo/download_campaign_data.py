@@ -314,7 +314,7 @@ def write_aggregated_csv(aggregated, output_path):
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for email in sorted(aggregated.keys()):
+        for email in sorted(aggregated.keys(), key=str.lower):
             eng = aggregated[email]
             writer.writerow({
                 "email": email,
@@ -387,6 +387,14 @@ def main():
             print(f"    Error fetching recipients: {e}", file=sys.stderr)
             continue
 
+        # Add all recipients to aggregated (with 0/0 if new)
+        for r in recipients:
+            email = (r.get("email", "") or "").lower()
+            if not email:
+                continue
+            if email not in aggregated:
+                aggregated[email] = {"opened": 0, "clicked": 0}
+
         print("    Fetching opens and clicks...")
         engagement = {}
         try:
@@ -396,14 +404,12 @@ def main():
         except requests.HTTPError as e:
             print(f"    Note: Could not fetch engagement: {e}", file=sys.stderr)
 
-        # Map profile_id -> email for this campaign's recipients
+        # Add engagement counts to aggregated
         pid_to_email = {r.get("customer_id", ""): (r.get("email", "") or "").lower() for r in recipients}
         for pid, eng in engagement.items():
             email = pid_to_email.get(pid, "")
             if not email:
                 continue
-            if email not in aggregated:
-                aggregated[email] = {"opened": 0, "clicked": 0}
             aggregated[email]["opened"] += eng.get("opened", 0)
             aggregated[email]["clicked"] += eng.get("clicked", 0)
 
