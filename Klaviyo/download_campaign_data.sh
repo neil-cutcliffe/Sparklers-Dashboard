@@ -1,10 +1,9 @@
 #!/bin/sh
 #
-# Download Klaviyo email campaign data: recipients with per-recipient opens and clicks.
+# Download Klaviyo email campaign data: N most recent campaigns, aggregated opens/clicks per email.
 #
 # Usage:
-#   ./download_campaign_data.sh "TSC Newsletter Feb 15"
-#   ./download_campaign_data.sh "Campaign 1" "Campaign 2"
+#   ./download_campaign_data.sh 5 "TSC Newsletter"
 #
 # Requires: KLAVIYO_API_KEY in environment or config.env
 #           Python 3 with requests (pip install -r requirements.txt)

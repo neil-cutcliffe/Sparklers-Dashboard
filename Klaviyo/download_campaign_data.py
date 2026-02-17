@@ -3,12 +3,15 @@
 Download Klaviyo email campaign data: recipients with per-recipient opens and clicks.
 
 Uses the Klaviyo API to fetch:
-- Recipient lists (email, status) per campaign
+- Recipient lists (email) per campaign
 - Per-recipient opens and clicks from the Events API
 
 Usage:
-    python download_campaign_data.py "TSC Newsletter Feb 15"
-    python download_campaign_data.py "TSC Newsletter Feb 15" "Another Campaign"
+    python download_campaign_data.py N "search string"
+    python download_campaign_data.py 5 "TSC Newsletter"
+
+Finds the N most recent sent campaigns whose name contains the search string,
+aggregates opens and clicks across all of them, outputs one row per email.
 
 Requires KLAVIYO_API_KEY in environment or config.env.
 """
@@ -75,7 +78,7 @@ def get_campaigns(api_key, channel="email", name_filter=None):
     flt = f"equals(messages.channel,'{channel}')"
     if name_filter:
         flt = f"and({flt},contains(name,\"{name_filter}\"))"
-    params = {"filter": flt}
+    params = {"filter": flt, "fields[campaign]": "name,status,send_time,created_at"}
     while True:
         resp = requests.get(url, params=params, headers=_api_headers(api_key), timeout=30)
         resp.raise_for_status()
@@ -86,6 +89,8 @@ def get_campaigns(api_key, channel="email", name_filter=None):
                 "id": item.get("id"),
                 "name": attrs.get("name", ""),
                 "status": attrs.get("status", ""),
+                "send_time": attrs.get("send_time"),
+                "created_at": attrs.get("created_at"),
             })
         url = data.get("links", {}).get("next")
         if not url:
@@ -303,17 +308,16 @@ def get_per_recipient_engagement(api_key, campaign_id, message_ids, send_time, c
     return engagement
 
 
-def write_recipients_csv(recipients, engagement, output_path):
-    """Write CSV: one row per recipient with email, opened count, clicked count."""
+def write_aggregated_csv(aggregated, output_path):
+    """Write CSV: one row per email with summed opens and clicks."""
     fieldnames = ["email", "opened", "clicked"]
     with open(output_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        for r in recipients:
-            pid = r.get("customer_id", "")
-            eng = engagement.get(pid, {})
+        for email in sorted(aggregated.keys()):
+            eng = aggregated[email]
             writer.writerow({
-                "email": r.get("email", ""),
+                "email": email,
                 "opened": eng.get("opened", 0),
                 "clicked": eng.get("clicked", 0),
             })
@@ -321,18 +325,22 @@ def write_recipients_csv(recipients, engagement, output_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download Klaviyo campaign recipients with per-recipient opens and clicks."
+        description="Download Klaviyo campaign data: N most recent campaigns matching search, aggregated opens/clicks per email."
     )
     parser.add_argument(
-        "campaign_names",
-        nargs="+",
-        help="Campaign name(s) to fetch, e.g. 'TSC Newsletter Feb 15'.",
+        "num_campaigns",
+        type=int,
+        help="Number of most recent campaigns to process.",
+    )
+    parser.add_argument(
+        "search_string",
+        help="Search string; campaign name must contain this.",
     )
     parser.add_argument(
         "-o",
         "--output-dir",
         default=".",
-        help="Output directory for CSV files (default: current directory).",
+        help="Output directory for CSV file (default: current directory).",
     )
     args = parser.parse_args()
 
@@ -347,48 +355,63 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for campaign_name in args.campaign_names:
-        print(f"Finding campaign: {campaign_name}...")
-        campaigns = get_campaigns(api_key, channel="email", name_filter=campaign_name)
-        sent = [c for c in campaigns if c.get("status") == "Sent"]
-        if not sent:
-            print(f"  No sent campaign found matching '{campaign_name}'. Skipping.", file=sys.stderr)
-            continue
-        if len(sent) > 1:
-            print(f"  Multiple matches; using first: {sent[0]['name']}")
-        campaign = sent[0]
-        campaign_id = campaign["id"]
+    print(f"Finding campaigns matching '{args.search_string}'...")
+    campaigns = get_campaigns(api_key, channel="email", name_filter=args.search_string)
+    sent = [c for c in campaigns if c.get("status") == "Sent"]
+    if not sent:
+        print(f"No sent campaigns found matching '{args.search_string}'.", file=sys.stderr)
+        sys.exit(1)
 
-        print(f"Fetching campaign: {campaign['name']} ({campaign_id})...")
+    # Sort by send_time (most recent first), fallback to created_at
+    def sort_key(c):
+        t = c.get("send_time") or c.get("created_at") or ""
+        return t
+
+    sent.sort(key=sort_key, reverse=True)
+    to_process = sent[: args.num_campaigns]
+    print(f"Processing {len(to_process)} most recent campaign(s):")
+
+    aggregated = {}  # email -> {opened: sum, clicked: sum}
+
+    for campaign in to_process:
+        campaign_id = campaign["id"]
+        print(f"  {campaign['name']} ({campaign_id})...")
         camp_full = get_campaign(api_key, campaign_id, include_messages=True)
         message_ids = camp_full.get("message_ids", [])
         send_time = camp_full.get("send_time")
 
         try:
             recipients = get_campaign_recipients(api_key, campaign_id)
-            print(f"  Recipients: {len(recipients)}")
+            print(f"    Recipients: {len(recipients)}")
         except requests.HTTPError as e:
-            print(f"  Error fetching recipients: {e}", file=sys.stderr)
+            print(f"    Error fetching recipients: {e}", file=sys.stderr)
             continue
 
-        print("  Fetching per-recipient opens and clicks...")
+        print("    Fetching opens and clicks...")
         engagement = {}
         try:
             engagement = get_per_recipient_engagement(
                 api_key, campaign_id, message_ids, send_time, campaign["name"]
             )
-            total_opens = sum(e.get("opened", 0) for e in engagement.values())
-            total_clicks = sum(e.get("clicked", 0) for e in engagement.values())
-            print(f"  Total opens: {total_opens}, Total clicks: {total_clicks}")
         except requests.HTTPError as e:
-            print(f"  Note: Could not fetch engagement: {e}", file=sys.stderr)
+            print(f"    Note: Could not fetch engagement: {e}", file=sys.stderr)
 
-        safe_name = "".join(c if c.isalnum() or c in " -_" else "_" for c in campaign["name"])[:50]
-        output_path = output_dir / f"klaviyo_{safe_name}.csv"
-        write_recipients_csv(recipients, engagement, output_path)
-        print(f"  Wrote: {output_path}")
+        # Map profile_id -> email for this campaign's recipients
+        pid_to_email = {r.get("customer_id", ""): (r.get("email", "") or "").lower() for r in recipients}
+        for pid, eng in engagement.items():
+            email = pid_to_email.get(pid, "")
+            if not email:
+                continue
+            if email not in aggregated:
+                aggregated[email] = {"opened": 0, "clicked": 0}
+            aggregated[email]["opened"] += eng.get("opened", 0)
+            aggregated[email]["clicked"] += eng.get("clicked", 0)
 
-    print("Done.")
+        time.sleep(0.5)
+
+    output_path = output_dir / "TSC-Newsletter-Opens.csv"
+    write_aggregated_csv(aggregated, output_path)
+    print(f"Wrote: {output_path} ({len(aggregated)} unique emails)")
 
 
 if __name__ == "__main__":

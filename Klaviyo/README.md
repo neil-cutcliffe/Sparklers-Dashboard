@@ -30,33 +30,32 @@ Download email recipient lists, opens, and clicks for Klaviyo campaigns.
 
 ## Usage
 
-**Download by campaign name:**
+**Download N most recent campaigns matching search:**
 ```bash
-./download_campaign_data.sh "TSC Newsletter Feb 15"
+./download_campaign_data.sh 5 "TSC Newsletter"
 ```
 
-**Multiple campaigns:**
-```bash
-./download_campaign_data.sh "Campaign 1" "Campaign 2"
-```
+- First parameter: number of campaigns to process (e.g. 5)
+- Second parameter: search string; campaign name must contain this
 
 **Output directory:**
 ```bash
-./download_campaign_data.sh "TSC Newsletter Feb 15" -o ./output
+./download_campaign_data.sh 5 "TSC Newsletter" -o ./output
 ```
 
 ## Output
 
-For each campaign, the script writes a CSV with one row per recipient:
+Writes `TSC-Newsletter-Opens.csv` with one row per unique email across all N campaigns:
 
 | Column | Description |
 |--------|-------------|
 | email  | Recipient email |
-| opened | Number of times this recipient opened the email |
-| clicked | Number of times this recipient clicked a link |
+| opened | Sum of opens across all N campaigns |
+| clicked | Sum of clicks across all N campaigns |
 
 ## What You Need to Provide
 
 1. **Klaviyo Private API Key** – Required. Create one in your Klaviyo account with the scopes listed above.
 
-2. **Campaign name** – The exact or partial campaign name (e.g. "TSC Newsletter Feb 15"). The script finds sent campaigns whose name contains the given text.
+2. **Number of campaigns** – How many of the most recent matching campaigns to include.
+3. **Search string** – Campaign name must contain this (e.g. "TSC Newsletter").
