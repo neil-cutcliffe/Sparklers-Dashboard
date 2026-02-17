@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# The IDs of the spreadsheets
+# The IDs of the spreadsheets, and the name of the tab
 SPARKLER_DATA_WORDPRESS="1uS5wqj7nrVmZlSHA06kEK6QgGg2A0RYreT8SjCI2ABk"
 ALL_SPARKLERS="All Sparklers"
 
@@ -59,24 +59,21 @@ source venv/bin/activate
 #    "${NEWSLETTER_1}"                   \
 #    "../Klaviyo/TSC-Newsletter-Opens-1.csv"
 
-
-echo
-python3 upload_to_sheets.py             \
-    "${SPARKLER_KLAVIYO}"               \
-    "${NEWSLETTER_2}"                   \
-    "../Klaviyo/TSC-Newsletter-Opens-2.csv"
-
-
-echo
-python3 upload_to_sheets.py             \
-    "${SPARKLER_KLAVIYO}"               \
-    "${NEWSLETTER_4}"                   \
-    "../Klaviyo/TSC-Newsletter-Opens-4.csv"
-
+#echo
+#python3 upload_to_sheets.py             \
+#    "${SPARKLER_KLAVIYO}"               \
+#    "${NEWSLETTER_2}"                   \
+#    "../Klaviyo/TSC-Newsletter-Opens-2.csv"
 
 #echo
 #python3 upload_to_sheets.py             \
 #    "${SPARKLER_KLAVIYO}"               \
-#    "${NEWSLETTER_6}"                   \
-#    "../Klaviyo/TSC-Newsletter-Opens-6.csv"
+#    "${NEWSLETTER_4}"                   \
+#    "../Klaviyo/TSC-Newsletter-Opens-4.csv"
+
+echo
+python3 upload_to_sheets.py             \
+    "${SPARKLER_KLAVIYO}"               \
+    "${NEWSLETTER_6}"                   \
+    "../Klaviyo/TSC-Newsletter-Opens-6.csv"
 
